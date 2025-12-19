@@ -1,4 +1,4 @@
-const Excel = require("../models/excel");
+const Excel = require("../models/Excel");
 
 const postUpdate = async (req, res) => {
     try {
