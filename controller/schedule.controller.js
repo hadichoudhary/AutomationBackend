@@ -1,6 +1,22 @@
 const ScheduledJob = require("../models/ScheduledJob");
 const cronToReadable = require("../utils/cronToReadable");
 
+const isValidCron = (cron) => {
+  if (!cron) return false;
+
+  const parts = cron.split(" ");
+  if (parts.length !== 5) return false;
+
+  const [min, hour, dom, mon, dow] = parts;
+
+  if (dom !== "*" || mon !== "*") return false;
+  if (+min < 0 || +min > 59) return false;
+  if (+hour < 0 || +hour > 23) return false;
+  if (dow !== "*" && (+dow < 0 || +dow > 6)) return false;
+
+  return true;
+};
+
 // GET all schedules for logged-in user
 const getUserSchedules = async (req, res) => {
   try {
@@ -37,15 +53,12 @@ const getUserSchedules = async (req, res) => {
 };
 
 // UPDATE topic
-const updateScheduleTopic = async (req, res) => {
+// UPDATE schedule (topic / cron / status)
+const updateSchedule = async (req, res) => {
   try {
     const userId = req.userInfo.userId;
     const { id } = req.params;
-    const { topic } = req.body;
-
-    if (!topic) {
-      return res.status(400).json({ message: "Topic is required" });
-    }
+    const { topic, schedule_cron, status } = req.body;
 
     const job = await ScheduledJob.findOne({
       _id: id,
@@ -56,12 +69,36 @@ const updateScheduleTopic = async (req, res) => {
       return res.status(404).json({ message: "Schedule not found" });
     }
 
-    job.topic = topic;
+    // Update topic
+    if (typeof topic === "string" && topic.trim()) {
+      job.topic = topic.trim();
+    }
+
+    // Update cron
+    if (schedule_cron) {
+      if (!isValidCron(schedule_cron)) {
+        return res.status(400).json({
+          message: "Invalid schedule format",
+        });
+      }
+      job.schedule_cron = schedule_cron;
+    }
+
+    // Update status
+    if (status) {
+      if (!["active", "paused"].includes(status)) {
+        return res.status(400).json({
+          message: "Invalid status value",
+        });
+      }
+      job.status = status;
+    }
+
     await job.save();
 
     return res.status(200).json({
       success: true,
-      message: "Topic updated successfully",
+      message: "Schedule updated successfully",
     });
   } catch (error) {
     console.error("Update schedule error:", error);
@@ -71,6 +108,7 @@ const updateScheduleTopic = async (req, res) => {
     });
   }
 };
+
 
 // DELETE schedule
 const deleteSchedule = async (req, res) => {
@@ -102,6 +140,6 @@ const deleteSchedule = async (req, res) => {
 
 module.exports = {
   getUserSchedules,
-  updateScheduleTopic,
+  updateSchedule,
   deleteSchedule,
 };

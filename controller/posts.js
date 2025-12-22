@@ -1,6 +1,7 @@
 const excel = require("../models/Excel")
 
 const getPosts = async (req, res) => {
+    
     const data = await excel.find()
     
     if (!data) {

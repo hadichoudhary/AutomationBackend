@@ -29,7 +29,7 @@ const scheduledJobSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["active", "inactive"],
+      enum: ["active", "paused"],
       default: "active",
     },
 
