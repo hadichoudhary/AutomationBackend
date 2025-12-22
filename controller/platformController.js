@@ -152,97 +152,93 @@ const linkedinCallback = async (req, res) => {
 
 const facebookCallback = async (req, res) => {
   try {
-    const { accessToken } = req.body;
-    const userId = req.userInfo.userId;
+    const { code, state } = req.query;
 
-
-    if (!accessToken) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing access token",
-      });
+    if (!code || !state) {
+      return res.status(400).send("Invalid Facebook callback");
     }
 
-    const response = await fetch(
-      `https://graph.facebook.com/me?fields=id,name,picture&access_token=${accessToken}`
+    // Decode JWT passed in state
+    const decodedToken = Buffer.from(state, "base64").toString("utf-8");
+    const userInfo = verifyToken(decodedToken); // your JWT verify
+    const userId = userInfo.userId;
+
+    /* 1️⃣ Exchange code for short-lived token */
+    const tokenRes = await fetch(
+      `https://graph.facebook.com/v19.0/oauth/access_token?` +
+        new URLSearchParams({
+          client_id: process.env.FACEBOOK_APP_ID,
+          client_secret: process.env.FACEBOOK_APP_SECRET,
+          redirect_uri: `${process.env.BACKEND_URL}/api/platforms/facebookCallback`,
+          code,
+        })
     );
 
-    if (!response.ok) {
-      throw new Error("Facebook profile fetch failed");
+    const tokenData = await tokenRes.json();
+    if (!tokenData.access_token) {
+      throw new Error("Token exchange failed");
     }
 
-    const profile = await response.json();
-
-    console.log(profile);
-
-    const expiresAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000);
-
-    const platformAccount = await PlatformAccount.findOneAndUpdate(
-      {
-        userId,
-        platform: "facebook",
-        accountId: profile.id,
-      },
-      {
-        userId,
-        platform: "facebook",
-        accountId: profile.id,
-        accountName: profile.name,
-        profileUrl: profile.picture?.data?.url,
-        accessToken: encryptToken(accessToken),
-        tokenExpiresAt: expiresAt,
-        status: "connected",
-        meta: profile,
-      },
-      { upsert: true, new: true }
+    /* 2️⃣ Exchange for long-lived token */
+    const longTokenRes = await fetch(
+      `https://graph.facebook.com/v19.0/oauth/access_token?` +
+        new URLSearchParams({
+          grant_type: "fb_exchange_token",
+          client_id: process.env.FACEBOOK_APP_ID,
+          client_secret: process.env.FACEBOOK_APP_SECRET,
+          fb_exchange_token: tokenData.access_token,
+        })
     );
 
-    const updated = await User.findOneAndUpdate(
-      { _id: userId, "platforms.platform": "facebook" },
-      {
-        $set: {
-          "platforms.$.platformAccountId": platformAccount._id,
-          "platforms.$.status": "connected",
+    const longTokenData = await longTokenRes.json();
+    const userAccessToken = longTokenData.access_token;
+
+    /* 3️⃣ Fetch Pages */
+    const pagesRes = await fetch(
+      `https://graph.facebook.com/v19.0/me/accounts?access_token=${userAccessToken}`
+    );
+    const pagesData = await pagesRes.json();
+
+    if (!pagesData.data || pagesData.data.length === 0) {
+      throw new Error("No Facebook pages found");
+    }
+
+    /* 4️⃣ Save each page */
+    for (const page of pagesData.data) {
+      const expiresAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000);
+
+      await PlatformAccount.findOneAndUpdate(
+        {
+          userId,
+          platform: "facebook",
+          accountId: page.id,
         },
-      },
-      { new: true }
-    );
-
-    if (!updated) {
-      await User.findByIdAndUpdate(userId, {
-        $addToSet: {
-          platforms: {
-            platform: "facebook",
-            platformAccountId: platformAccount._id,
-            status: "connected",
-          },
+        {
+          userId,
+          platform: "facebook",
+          accountId: page.id,
+          accountName: page.name,
+          accessToken: encryptToken(page.access_token), // PAGE token
+          tokenExpiresAt: expiresAt,
+          status: "connected",
+          meta: page,
         },
-      });
+        { upsert: true, new: true }
+      );
     }
 
-    await logActivity({
-      userId,
-      type: "PLATFORM_CONNECTED",
-      title: "Facebook account connected",
-      metadata: {
-        platform: "facebook",
-        accountName: profile.name,
-      },
-    });
-
-    return res.json({
-      success: true,
-      message: "Facebook connected",
-      platformId: platformAccount._id,
-    });
+    /* 5️⃣ Redirect back to frontend */
+    return res.redirect(
+      `${process.env.FRONTEND_URL}/platforms?facebook=connected`
+    );
   } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Facebook connection failed",
-      error: error.message,
-    });
+    console.error("Facebook callback error:", error);
+    return res.redirect(
+      `${process.env.FRONTEND_URL}/platforms?facebook=error`
+    );
   }
 };
+
 
 const disconnectPlatform = async (req, res) => {
   try {
