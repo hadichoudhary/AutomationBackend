@@ -59,6 +59,10 @@ app.use("/api/check", verifyRouter);
 app.use("/api/custom", customRoute);
 app.use("/api/n8n", contentRoute);
 
+app.get("/api/run/server",(req,res)=>{
+  res.send("server is connected")
+})
+
 
 app.listen(4000, () => {
   console.log("Server running on port 4000");
