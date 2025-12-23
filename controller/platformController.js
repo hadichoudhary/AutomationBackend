@@ -155,45 +155,75 @@ const facebookCallback = async (req, res) => {
     const { code, state } = req.query;
 
     if (!code || !state) {
-      return res.status(400).send("Invalid Facebook callback");
+      return res.status(400).json({
+        success: false,
+        message: "Missing code or state",
+      });
     }
 
-    // Decode JWT passed in state
-    const decodedToken = Buffer.from(state, "base64").toString("utf-8");
-    const userInfo = verifyToken(decodedToken); // your JWT verify
-    const userId = userInfo.userId;
+    // 1️⃣ Decode state → JWT
+    let decoded;
+    try {
+      const token = Buffer.from(state, "base64").toString("utf-8");
+      decoded = jwt.verify(token, process.env.JWT_SECRET_KEY);
+    } catch (err) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid login state",
+      });
+    }
 
-    /* 1️⃣ Exchange code for short-lived token */
-    const tokenRes = await fetch(
-      `https://graph.facebook.com/v19.0/oauth/access_token?` +
-        new URLSearchParams({
+    const userId = decoded.userId;
+
+    // 2️⃣ Exchange code → short-lived token
+    const shortTokenRes = await fetch(
+      "https://graph.facebook.com/v19.0/oauth/access_token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
           client_id: process.env.FACEBOOK_APP_ID,
           client_secret: process.env.FACEBOOK_APP_SECRET,
-          redirect_uri: `${process.env.BACKEND_URL}/api/platforms/facebookCallback`,
+          redirect_uri: "http://localhost:4000/api/platforms/facebookCallback",
           code,
-        })
+        }),
+      }
     );
 
-    const tokenData = await tokenRes.json();
-    if (!tokenData.access_token) {
-      throw new Error("Token exchange failed");
+    const shortTokenData = await shortTokenRes.json();
+    if (!shortTokenRes.ok) {
+      throw new Error(shortTokenData.error?.message);
     }
 
-    /* 2️⃣ Exchange for long-lived token */
+    // 3️⃣ Exchange → long-lived token
     const longTokenRes = await fetch(
-      `https://graph.facebook.com/v19.0/oauth/access_token?` +
-        new URLSearchParams({
+      "https://graph.facebook.com/v19.0/oauth/access_token",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
           grant_type: "fb_exchange_token",
           client_id: process.env.FACEBOOK_APP_ID,
           client_secret: process.env.FACEBOOK_APP_SECRET,
-          fb_exchange_token: tokenData.access_token,
-        })
+          fb_exchange_token: shortTokenData.access_token,
+        }),
+      }
     );
 
     const longTokenData = await longTokenRes.json();
+    if (!longTokenRes.ok || !longTokenData.access_token) {
+      throw new Error("Long-lived token exchange failed");
+    }
+
     const userAccessToken = longTokenData.access_token;
 
-    /* 3️⃣ Fetch Pages */
+    // 4️⃣ Fetch Facebook user
+    const meRes = await fetch(
+      `https://graph.facebook.com/me?fields=id,name&access_token=${userAccessToken}`
+    );
+    const meData = await meRes.json();
+
+    // 5️⃣ Fetch pages
     const pagesRes = await fetch(
       `https://graph.facebook.com/v19.0/me/accounts?access_token=${userAccessToken}`
     );
@@ -203,11 +233,11 @@ const facebookCallback = async (req, res) => {
       throw new Error("No Facebook pages found");
     }
 
-    /* 4️⃣ Save each page */
-    for (const page of pagesData.data) {
-      const expiresAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000);
+    // 6️⃣ Save pages (PlatformAccount)
+    let lastPlatformAccount = null;
 
-      await PlatformAccount.findOneAndUpdate(
+    for (const page of pagesData.data) {
+      lastPlatformAccount = await PlatformAccount.findOneAndUpdate(
         {
           userId,
           platform: "facebook",
@@ -218,21 +248,55 @@ const facebookCallback = async (req, res) => {
           platform: "facebook",
           accountId: page.id,
           accountName: page.name,
-          accessToken: encryptToken(page.access_token), // PAGE token
-          tokenExpiresAt: expiresAt,
+          accessToken: encryptToken(page.access_token),
+          tokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
           status: "connected",
           meta: page,
         },
-        { upsert: true, new: true }
+        { upsert: true, new: true, runValidators: true }
       );
     }
 
-    /* 5️⃣ Redirect back to frontend */
+    // 7️⃣ Update User.platforms (LinkedIn-style logic)
+    const updated = await User.findOneAndUpdate(
+      { _id: userId, "platforms.platform": "facebook" },
+      {
+        $set: {
+          "platforms.$.status": "connected",
+          "platforms.$.platformAccountId": lastPlatformAccount._id,
+        },
+      },
+      { new: true }
+    );
+
+    // 8️⃣ If Facebook platform does NOT exist → create it
+    if (!updated) {
+      await User.findByIdAndUpdate(userId, {
+        $addToSet: {
+          platforms: {
+            platform: "facebook",
+            platformAccountId: lastPlatformAccount._id,
+            status: "connected",
+          },
+        },
+      });
+    }
+
+    // 9️⃣ Log activity
+    await logActivity({
+      userId,
+      type: "PLATFORM_CONNECTED",
+      title: "Facebook account connected",
+      metadata: {
+        platform: "facebook",
+      },
+    });
+
     return res.redirect(
       `${process.env.FRONTEND_URL}/platforms?facebook=connected`
     );
   } catch (error) {
-    console.error("Facebook callback error:", error);
+    console.error("Facebook callback error:", error.message);
     return res.redirect(
       `${process.env.FRONTEND_URL}/platforms?facebook=error`
     );
@@ -240,9 +304,10 @@ const facebookCallback = async (req, res) => {
 };
 
 
+
 const disconnectPlatform = async (req, res) => {
   try {
-    const userId = req.userInfo.userId; 
+    const userId = req.userInfo.userId;
     const platform = req.params.platform.toLowerCase();
 
     const accountResult = await PlatformAccount.updateOne(

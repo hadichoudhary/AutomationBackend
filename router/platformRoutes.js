@@ -5,7 +5,7 @@ const authMiddleware = require('../middlewares/authMiddleware');
 
  platformRoutes.get('/linkedinCallback',linkedinCallback
  )
- platformRoutes.post('/facebookCallback', authMiddleware,facebookCallback);
+ platformRoutes.get('/facebookCallback',facebookCallback);
 
  platformRoutes.get('/linkedinStatus',authMiddleware,getPlatformStatus)
 
