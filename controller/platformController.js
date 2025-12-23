@@ -184,7 +184,7 @@ const facebookCallback = async (req, res) => {
         body: new URLSearchParams({
           client_id: process.env.FACEBOOK_APP_ID,
           client_secret: process.env.FACEBOOK_APP_SECRET,
-          redirect_uri: "http://localhost:4000/api/platforms/facebookCallback",
+          redirect_uri: `${process.env.BACKEND_URL}/api/platforms/facebookCallback`,
           code,
         }),
       }
