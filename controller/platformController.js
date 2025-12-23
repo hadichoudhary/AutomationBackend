@@ -310,37 +310,43 @@ const disconnectPlatform = async (req, res) => {
     const userId = req.userInfo.userId;
     const platform = req.params.platform.toLowerCase();
 
+    // 1️⃣ Disconnect PlatformAccount ONLY if connected
     const accountResult = await PlatformAccount.updateOne(
-      { userId, platform },
+      { userId, platform, status: "connected" },
       { $set: { status: "disconnected" } }
     );
 
+    // 2️⃣ Disconnect User.platform entry ONLY if connected
     const userResult = await User.updateOne(
-      { _id: userId, "platforms.platform": platform },
+      {
+        _id: userId,
+        "platforms.platform": platform,
+        "platforms.status": "connected",
+      },
       {
         $set: {
           "platforms.$.status": "disconnected",
+          "platforms.$.platformAccountId": null,
         },
       }
     );
 
+    // 3️⃣ Nothing was connected → return error
     if (
-      accountResult.matchedCount === 0 &&
-      userResult.matchedCount === 0
+      accountResult.modifiedCount === 0 &&
+      userResult.modifiedCount === 0
     ) {
-      return res.status(404).json({
+      return res.status(400).json({
         success: false,
-        message: "Platform not connected",
-      })
+        message: "Platform already disconnected or not connected",
+      });
     }
 
     await logActivity({
       userId,
       type: "PLATFORM_DISCONNECTED",
       title: `${platform} account disconnected`,
-      metadata: {
-        platform,
-      },
+      metadata: { platform },
     });
 
     return res.json({
@@ -358,11 +364,15 @@ const disconnectPlatform = async (req, res) => {
 
 
 
+
 const getPlatformStatus = async (req, res) => {
   try {
     const userId = req.userInfo.userId;
 
-    const platforms = await PlatformAccount.find({ userId })
+    const platforms = await PlatformAccount.find({
+      userId,
+      status: "connected",
+    })
       .select("platform accountName status")
       .lean();
 
@@ -377,6 +387,7 @@ const getPlatformStatus = async (req, res) => {
     });
   }
 };
+
 
 
 module.exports = {
