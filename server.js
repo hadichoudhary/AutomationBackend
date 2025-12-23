@@ -60,7 +60,9 @@ app.use("/api/custom", customRoute);
 app.use("/api/n8n", contentRoute);
 
 app.get("/api/run/server",(req,res)=>{
-  res.send("server is connected")
+  res.status(200).json({
+    message:"server is running "
+  })
 })
 
 
