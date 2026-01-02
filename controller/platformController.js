@@ -4,8 +4,7 @@ const User = require("../models/User");
 const encryptToken = require("../utils/encryption");
 const jwt = require("jsonwebtoken");
 const logActivity = require("../utils/logActivity");
-
-
+const mongoose = require("mongoose");
 
 const getLinkedInToken = async (code) => {
   const body = new URLSearchParams({
@@ -32,7 +31,6 @@ const getLinkedInToken = async (code) => {
   return response.json();
 };
 
-
 const getLinkedInProfile = async (accessToken) => {
   const response = await fetch(process.env.LINKEDIN_USER_INFO, {
     method: 'get',
@@ -45,7 +43,6 @@ const getLinkedInProfile = async (accessToken) => {
 
   return response.json();
 };
-
 
 const linkedinCallback = async (req, res) => {
   try {
@@ -69,21 +66,14 @@ const linkedinCallback = async (req, res) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET_KEY);
-
     const userId = decoded.userId;
 
-
     const tokenData = await getLinkedInToken(code);
-
-
     const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
-
     const profile = await getLinkedInProfile(tokenData.access_token);
     console.log(profile);
 
-
     const accountId = profile.sub;
-
 
     const platformAccount = await PlatformAccount.findOneAndUpdate(
       {
@@ -106,27 +96,34 @@ const linkedinCallback = async (req, res) => {
       { upsert: true, new: true, runValidators: true }
     );
 
-    const updated = await User.findOneAndUpdate(
-      { _id: userId, "platforms.platform": "linkedin" },
+    // FIXED: Use arrayFilters to update only the LinkedIn platform
+    const updateResult = await User.updateOne(
+      { _id: userId },
       {
         $set: {
-          "platforms.$.platformAccountId": platformAccount._id,
-          "platforms.$.status": "connected",
-        },
+          "platforms.$[linkedinElem].platformAccountId": platformAccount._id,
+          "platforms.$[linkedinElem].status": "connected",
+        }
       },
-      { new: true }
+      {
+        arrayFilters: [{ "linkedinElem.platform": "linkedin" }]
+      }
     );
 
-    if (!updated) {
-      await User.findByIdAndUpdate(userId, {
-        $addToSet: {
-          platforms: {
-            platform: "linkedin",
-            platformAccountId: platformAccount._id,
-            status: "connected",
-          },
-        },
-      });
+    // If LinkedIn platform doesn't exist in the array, add it
+    if (updateResult.matchedCount === 0 || updateResult.modifiedCount === 0) {
+      await User.findByIdAndUpdate(
+        userId,
+        {
+          $addToSet: {
+            platforms: {
+              platform: "linkedin",
+              platformAccountId: platformAccount._id,
+              status: "connected",
+            }
+          }
+        }
+      );
     }
 
     await logActivity({
@@ -148,7 +145,6 @@ const linkedinCallback = async (req, res) => {
     });
   }
 };
-
 
 const facebookCallback = async (req, res) => {
   try {
@@ -257,30 +253,45 @@ const facebookCallback = async (req, res) => {
       );
     }
 
-    // 7️⃣ Update User.platforms (LinkedIn-style logic)
-    const updated = await User.findOneAndUpdate(
-      { _id: userId, "platforms.platform": "facebook" },
+    // FIXED: Use arrayFilters to update only the Facebook platform
+    const updateResult = await User.updateOne(
+      { _id: userId },
       {
         $set: {
-          "platforms.$.status": "connected",
-          "platforms.$.platformAccountId": lastPlatformAccount._id,
-        },
+          "platforms.$[fbElem].platformAccountId": lastPlatformAccount._id,
+          "platforms.$[fbElem].status": "connected",
+        }
       },
-      { new: true }
+      {
+        arrayFilters: [{ "fbElem.platform": "facebook" }]
+      }
     );
 
-    // 8️⃣ If Facebook platform does NOT exist → create it
-    if (!updated) {
-      await User.findByIdAndUpdate(userId, {
-        $addToSet: {
-          platforms: {
-            platform: "facebook",
-            platformAccountId: lastPlatformAccount._id,
-            status: "connected",
-          },
-        },
-      });
+    // If Facebook platform doesn't exist in the array, add it
+    if (updateResult.matchedCount === 0 || updateResult.modifiedCount === 0) {
+      await User.findByIdAndUpdate(
+        userId,
+        {
+          $addToSet: {
+            platforms: {
+              platform: "facebook",
+              platformAccountId: lastPlatformAccount._id,
+              status: "connected",
+            }
+          }
+        }
+      );
     }
+
+    // 🔧 Ensure LinkedIn stays connected when connecting Facebook
+    await User.updateOne(
+      { _id: userId, "platforms.platform": "linkedin" },
+      {
+        $set: {
+          "platforms.$.status": "connected"
+        }
+      }
+    );
 
     // 9️⃣ Log activity
     await logActivity({
@@ -302,8 +313,6 @@ const facebookCallback = async (req, res) => {
     );
   }
 };
-
-
 
 const disconnectPlatform = async (req, res) => {
   try {
@@ -362,9 +371,6 @@ const disconnectPlatform = async (req, res) => {
   }
 };
 
-
-
-
 const getPlatformStatus = async (req, res) => {
   try {
     const userId = req.userInfo.userId;
@@ -387,8 +393,6 @@ const getPlatformStatus = async (req, res) => {
     });
   }
 };
-
-
 
 module.exports = {
   linkedinCallback,
