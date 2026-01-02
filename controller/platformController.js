@@ -325,18 +325,22 @@ const disconnectPlatform = async (req, res) => {
       { $set: { status: "disconnected" } }
     );
 
-    // 2️⃣ Disconnect User.platform entry ONLY if connected
+    // 2️⃣ FIXED: Use arrayFilters to target ONLY the specific platform
     const userResult = await User.updateOne(
-      {
-        _id: userId,
-        "platforms.platform": platform,
-        "platforms.status": "connected",
-      },
+      { _id: userId },
       {
         $set: {
-          "platforms.$.status": "disconnected",
-          "platforms.$.platformAccountId": null,
-        },
+          "platforms.$[elem].status": "disconnected",
+          "platforms.$[elem].platformAccountId": null,
+        }
+      },
+      {
+        arrayFilters: [
+          { 
+            "elem.platform": platform,
+            "elem.status": "connected"
+          }
+        ]
       }
     );
 
